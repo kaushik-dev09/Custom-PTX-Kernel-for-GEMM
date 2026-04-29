@@ -1,0 +1,49 @@
+// ─────────────────────────────────────────────────
+//  Tensor Core WMMA via PTX mma.sync.aligned
+//  Computes: D[m16n8k16] = A[m16k16] * B[k16n8] + C[m16n8]
+//  Each warp calls this; threads hold fragments in registers.
+// ─────────────────────────────────────────────────
+
+__device__ __forceinline__
+void mma_m16n8k16(
+    float* d,          // [4] output fragment (f32)
+    uint32_t* a,       // [4] A fragment (f16x2 packed)
+    uint32_t* b,       // [2] B fragment (f16x2 packed)
+    float* c           // [4] C fragment (f32)
+) {
+    // PTX mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
+    asm volatile(
+        "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+        "{%0, %1, %2, %3},"          // D (4 f32 outputs per thread)
+        "{%4, %5, %6, %7},"          // A (8 f16 = 4 x uint32 packed)
+        "{%8, %9},"                  // B (4 f16 = 2 x uint32 packed)
+        "{%10, %11, %12, %13};"      // C (4 f32 accumulators)
+        : "=f"(d[0]), "=f"(d[1]), "=f"(d[2]), "=f"(d[3])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]),
+          "r"(b[0]), "r"(b[1]),
+          "f"(c[0]), "f"(c[1]), "f"(c[2]), "f"(c[3])
+    );
+}
+
+// Load A fragment: ldmatrix.sync.aligned.m8n8.x4.shared.b16
+// This is the canonical way to populate mma register fragments
+__device__ __forceinline__
+void ldmatrix_x4(uint32_t* frag, uint32_t smem_addr) {
+    asm volatile(
+        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
+        "{%0, %1, %2, %3}, [%4];"
+        : "=r"(frag[0]), "=r"(frag[1]), "=r"(frag[2]), "=r"(frag[3])
+        : "r"(smem_addr)
+    );
+}
+
+// Load B fragment: ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16
+__device__ __forceinline__
+void ldmatrix_x2_trans(uint32_t* frag, uint32_t smem_addr) {
+    asm volatile(
+        "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 "
+        "{%0, %1}, [%2];"
+        : "=r"(frag[0]), "=r"(frag[1])
+        : "r"(smem_addr)
+    );
+}
